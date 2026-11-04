@@ -1,150 +1,161 @@
 # Dharohar (धरोहर) · A Trusted Manuscript Archive
 
-> **"Every word in a digitized manuscript carries a confidence score, a human can verify it, and the whole record is cryptographically provable."**
+> Every word in a digitised manuscript should carry a confidence score, be verifiable by a human expert, and have a tamper-evident history.
+
+**Track:** Culture & Digital Heritage · **Stack:** React 19, Vite, Tailwind, Express, TypeScript, Gemini API
 
 ---
 
-## 🏛️ Executive Summary
+## 1. The Problem
 
-India possesses over 5 million ancient manuscripts written across thousands of years in diverse scripts (Brahmi, Grantha, Sharada, Devanagari, Newari). Yet digitization efforts face critical roadblocks:
-1. **Single-engine OCR fails on historical artifacts** due to uneven illumination, ink fading, and fragile medium degradation.
-2. **AI models hallucinate missing text**, introducing historical corruptions into scholarly archives.
-3. **Database records can be quietly altered**, leaving no cryptographic audit trail for contested historical sources.
+India holds millions of manuscripts in Brahmi, Grantha, Sharada, Devanagari and other scripts. Digitising them runs into three problems:
 
-**Dharohar** solves this with a 6-module architecture featuring **tri-engine consensus OCR**, **damage-aware lacuna isolation**, **expert human-in-the-loop ground truth verification**, and an **immutable Ed25519-signed provenance hash-chain ledger**.
+1. **OCR struggles on historical media.** Uneven lighting, faded ink, palm-leaf grain and insect damage break standard OCR.
+2. **AI can invent text.** A model that "completes" a damaged line can silently corrupt a scholarly record.
+3. **Records can be altered quietly.** Without an audit trail, a contested reading cannot be defended.
 
----
+## 2. What Dharohar Does
 
-## 📐 System Architecture
+Dharohar is a web application that walks a folio through a verifiable pipeline:
+
+| # | Module | What it does | Status |
+|---|---|---|---|
+| 1 | **Capture & Restore** | Upload a folio image and clean it with in-browser canvas filters: lighting correction, denoise, binarisation, deskew. | Working (client-side) |
+| 2 | **Consensus OCR** | Shows per-word readings from several engines with an agreement-based confidence score. | Gemini vision is live. Tesseract/TrOCR are currently **simulated placeholders** (see §7). |
+| 3 | **Damage-Aware View** | Marks physically missing text as `[UNREADABLE_GAP]`. AI restorations are kept in a separate layer with a stated justification, never mixed into the original text. | Working (Gemini, with preset fallback) |
+| 4 | **Human Review Queue** | An expert inspects a word under a magnifier, accepts an engine's reading or types a correction. Corrections are stored as a separate ground-truth layer. | Working |
+| 5 | **Provenance Ledger** | Every lifecycle event becomes a block in a SHA-256 hash chain, signed with Ed25519, with a Merkle root over the blocks. A Verify view re-checks the whole chain. | Working (in-memory) |
+| 6 | **Hybrid Search** | Search across English, Hindi and Sanskrit (Devanagari/IAST); Gemini analyses the query, with keyword matching over the archive. | Working (Gemini, with keyword fallback) |
+
+Also included: a **Benchmark dashboard** (illustrative targets, see §7) and a **Tamper demo** that simulates a direct database edit and shows the ledger detecting it.
+
+## 3. Architecture
 
 ```text
-[ Browser / PWA Client ]
-         │
-         ▼
-[ Express + TypeScript Full-Stack Server ]
-         │
-         ├─── Preprocessing Pipeline (Sauvola Binarize · Homomorphic Lighting · Hough Deskew)
-         │
-         ├─── Multi-Engine Consensus Arbiter
-         │         ├── Engine 1: Tesseract v5.3 (Classical glyph geometry)
-         │         ├── Engine 2: TrOCR-Indic (Transformer sequence decoder)
-         │         └── Engine 3: Gemini 3.8 Flash Vision (Philological multimodal LLM)
-         │
-         ├─── Damage-Aware Output Layer (Isolates lacunae from AI conjectures)
-         │
-         ├─── Human Review Queue (UV loupe · Ed25519 Ground Truth certification)
-         │
-         └─── Cryptographic Provenance Ledger (SHA-256 Hash Chain · Daily Merkle Root · Ed25519 Signatures)
+[ Browser · React + Vite SPA ]
+        │   fetch /api/*
+        ▼
+[ Express + TypeScript server (server.ts) ]
+        │
+        ├── Manuscript store ......... in-memory, seeded with 3 sample folios
+        │                              (palm-leaf, birch-bark, paper)
+        ├── OCR consensus ............ POST /api/gemini/consensus-ocr
+        │      ├─ Gemini vision (live, needs GEMINI_API_KEY)
+        │      └─ Tesseract / TrOCR votes (placeholder fields, see §7)
+        ├── Gap restoration .......... POST /api/gemini/restore-gap
+        ├── Search ................... POST /api/gemini/search
+        └── Provenance ledger ........ SHA-256 chain + Ed25519 signatures
+               ├─ record-correction (append block)
+               ├─ verify (recompute payload hash, chain link, signature)
+               └─ tamper / restore (demo controls)
 ```
 
----
+The server runs Vite in middleware mode during development, so one process serves both the UI and the API on port 3000.
 
-## 🚀 The 6 Core Modules
+### Provenance ledger block
 
-1. **Restore and Capture (`PreprocessViewer`)**
-   - Phone-friendly folio upload with edge detection preview.
-   - Interactive canvas cleanup pipeline:
-     - **Lighting Correction**: Homomorphic filter removing shadows from ancient raking lamp illumination.
-     - **Fibrous Denoise**: Bilateral filter dampening palm-leaf grain while retaining fine ligatures.
-     - **Sauvola Binarization**: Adaptive local-variance thresholding for faint carbon soot ink.
-     - **Hough Deskew**: Automated rotation alignment ($-5^\circ$ to $+5^\circ$).
+Each block has this shape (`src/types/manuscript.ts`):
 
-2. **Multi-Engine Consensus OCR (`ConsensusViewer`)**
-   - Three independent engines vote on every word/character cluster:
-     - **Tesseract v5.3** (layout & bounding boxes)
-     - **TrOCR** (stroke sequence decoding)
-     - **Gemini 3.8 Flash Vision** (contextual Indic epigraphy & script arbiter)
-   - Dynamic consensus scoring: $3/3$ agreement ($\ge 90\%$), $2/3$ partial agreement ($70\text{--}89\%$), and disagreement ($<70\%$).
-
-3. **Damage-Aware Lacuna Isolation (`DamageAwareViewer`)**
-   - Physical tears, insect gall perforations, and water stains are strictly marked `[UNREADABLE_GAP]`.
-   - Philological AI completions are labeled `[AI-suggested: ...]` with grammatical and metrical justifications, stored in a separate provenance layer without overwriting ground truth.
-
-4. **Human Review Queue (`ReviewQueue`)**
-   - High-magnification folio loupe (280% zoom) showing exact inscription context.
-   - 1-click engine pre-fills and certified epigraphist edit forms.
-   - Commits corrections directly as signed `HUMAN_CORRECTION` blocks to the ledger.
-
-5. **Provenance Ledger (`ProvenanceLedger`)**
-   - Every lifecycle event is hashed into a sequential chain with `prev_hash`, `payload_hash`, and a dynamic Merkle root.
-   - Cryptographically signed with **Ed25519** by the Dharohar Archival Authority.
-   - Public **Verify** view for verifying hash authenticity.
-
-6. **Hybrid Multilingual Search (`HybridSearch`)**
-   - Semantic query translation powered by Gemini 3.8 Flash.
-   - Supports search across English, Hindi, and Sanskrit (Devanagari/IAST).
-
----
-
-## 🏆 The Two Phase 2 Winning Features
-
-### 1. Live Benchmark Dashboard (`BenchmarkDashboard`)
-Quantitative evaluation measured across **1,450 synthetic degraded folios**:
-- **Raw OCR (Tesseract Baseline)**: 18.4% CER · 26.2% WER
-- **Cleaned Pipeline**: 12.1% CER · 17.5% WER
-- **3-Engine Consensus**: 4.2% CER · 6.8% WER
-- **Post-Human Certified**: 0.4% CER · 0.7% WER (**-97.3% total error reduction**)
-- Includes empirical ligature confusion frequency matrices (*śa/sa*, *ṇa/na*, dropped *anusvāra*).
-
-### 2. Live Database Tamper Demo (`TamperDemoModal`)
-- Simulates an adversary executing direct SQL updates on historical records in database storage.
-- Instantly triggers an app-wide crimson alert pointing directly to the broken block and failed hash comparison.
-- 1-click restoration proves self-healing cryptographic verification.
-
----
-
-## 🛠️ Quickstart & Local Setup
-
-### Prerequisites
-- Node.js $\ge 20$
-- npm $\ge 9$
-- Gemini API Key (optional, built-in resilient fallbacks ensure the demo never crashes)
-
-### Installation
-```bash
-# Clone the repository
-git clone https://github.com/YOUR_USERNAME/dharohar-manuscript-archive.git
-cd dharohar-manuscript-archive
-
-# Install dependencies
-npm install
-
-# Configure environment variables
-cp .env.example .env
-# Add your GEMINI_API_KEY inside .env
-
-# Run development server (runs full-stack on port 3000)
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) in your browser.
-
----
-
-## 🧪 Build and Lint Verification
-
-```bash
-# Type-check and lint codebase
-npm run lint
-
-# Build production bundle
-npm run build
-```
-
----
-
-## 📊 Judging Criteria Alignment
-
-| Criterion | Dharohar Implementation |
+| Field | Meaning |
 |---|---|
-| **Code Quality (40%)** | Full TypeScript strict typing, modular components, clean REST API endpoints, robust cryptographic primitives |
-| **Architecture & Scalability (30%)** | Pluggable OCR engines, separate provenance layers, canvas GPU-accelerated filters, Merkle root verification |
-| **UI/UX (20%)** | Museum-grade typography (Cinzel, Cormorant Garamond), side-by-side consensus viewer, loupe magnification, responsive layout |
-| **Innovation (10%)** | Tri-engine voting consensus, damage-aware AI segregation, Ed25519 hash-chain provenance |
-| **Phase 2 Live Resilience (35%)** | Automated fallbacks so API limits or network drops never crash the live booth demo |
-| **Phase 2 Code Integrity (25%)** | Live database tamper detection and verified error reduction benchmarks |
+| `index` | Position in the chain |
+| `timestamp` | ISO time of the event |
+| `eventType` | `GENESIS`, `INGESTION`, `PREPROCESSING`, `CONSENSUS_OCR`, `DAMAGE_ANALYSIS` or `HUMAN_CORRECTION` |
+| `documentId`, `documentTitle` | The manuscript the event belongs to |
+| `payload` | Event details (JSON) |
+| `payloadHash` | `SHA-256(JSON(payload))` |
+| `prevHash` | `blockHash` of the previous block |
+| `blockHash` | `SHA-256(index \| timestamp \| eventType \| documentId \| payloadHash \| prevHash)` |
+| `merkleRoot` | Merkle root computed over the block's hashes |
+| `signature` | Ed25519 signature of `blockHash` by the archive authority key |
 
----
+**Verification** recomputes the payload hash, checks `prevHash` against the previous block, and verifies the signature. The first failure is reported with its block number.
 
-## 📜 License
-Licensed under the Apache-2.0 License.
+### Word record (the OCR layer)
+
+`originalText`, `consensusText`, `tesseractVote`, `trocrVote`, `geminiVote`, `confidence` (0–1), `isDamagedGap`, `aiSuggestedCompletion`, `aiCompletionReason`, `humanCorrection`, `humanReviewStatus` (`unreviewed | verified | corrected | flagged`), `reviewerName`, `bbox` (normalised 0–1000).
+
+Raw OCR output, AI suggestions and human corrections live in **separate fields**, so a correction never overwrites what the machine originally read.
+
+## 4. API Reference
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | `/api/health` | Server status, number of manuscripts, ledger height, tamper flag |
+| GET | `/api/manuscripts` | All manuscripts with their word records |
+| POST | `/api/gemini/consensus-ocr` | Run OCR on a folio image and return word-level consensus |
+| POST | `/api/gemini/restore-gap` | Philological suggestion for a damaged gap (kept as a separate layer) |
+| POST | `/api/gemini/search` | Multilingual query analysis plus archive search |
+| POST | `/api/ledger/record-correction` | Save a human correction and append a signed block |
+| GET | `/api/ledger/verify` | Verify the whole chain; returns validity, broken block, Merkle root, public key |
+| POST | `/api/ledger/tamper` | Demo only: simulate a database edit |
+| POST | `/api/ledger/restore` | Demo only: undo the simulated edit |
+| GET | `/api/benchmarks` | Illustrative benchmark figures (see §7) |
+
+## 5. Setup
+
+**Requirements:** Node.js 20+, npm 9+. A Gemini API key is optional.
+
+```bash
+git clone https://github.com/suraj-srivastava-17/Dharohar---A-trusted-manuscript-archive.git
+cd Dharohar---A-trusted-manuscript-archive
+
+npm install
+cp .env.example .env          # add GEMINI_API_KEY inside .env (optional)
+npm run dev                   # http://localhost:3000
+```
+
+Without a Gemini key the app still runs. OCR, gap restoration and search then return built-in sample results, so uploaded images are **not** analysed in that mode.
+
+**Production build**
+
+```bash
+npm run build                                 # builds the frontend to dist/
+NODE_ENV=production npx tsx server.ts         # serves dist/ and the API
+```
+
+**Type-check:** `npm run lint`
+
+## 6. Demo Walkthrough
+
+1. Open the **Consensus OCR** tab: a palm-leaf folio with per-word votes and confidence.
+2. Open **Damage**: see `[UNREADABLE_GAP]` and a separate AI suggestion with its reasoning.
+3. Open **Review**: correct a word. A `HUMAN_CORRECTION` block is appended to the ledger.
+4. Open **Ledger**: the chain shows as valid, with its Merkle root and public key.
+5. Press **Tamper**: the ledger turns red and points to the exact block whose hash no longer matches.
+6. Press **Restore**: the ledger verifies again.
+
+## 7. Limitations (read before judging)
+
+We would rather state these than have them found:
+
+- **Only Gemini performs real OCR.** The Tesseract and TrOCR columns are placeholder values in the data model. Integrating real engines is the first item on the roadmap. The "consensus" score is therefore an agreement calculation over placeholder votes plus the live Gemini reading.
+- **Benchmark figures are illustrative.** The CER/WER values on the dashboard (for example 18.4% → 0.4%) are fixed numbers served by `/api/benchmarks`. They are **not** measured results from a test run.
+- **The ledger is in memory.** It resets when the server restarts, and the signing key is regenerated each time. The chain and verification logic is real; persistence is not yet implemented.
+- **The tamper demo is a simulation.** It changes the displayed payload of one block without re-hashing, to show how detection works. It does not edit a real database.
+- **Image filters run in the browser** on canvas, not on a server-side pipeline.
+- **Authentication is not implemented.** The reviewer name is free text.
+
+## 8. Roadmap
+
+1. Run real Tesseract (and a Sanskrit/Devanagari-capable model) behind the same consensus interface.
+2. Persist manuscripts and the ledger in a database (PostgreSQL or SQLite) with a stable archive signing key.
+3. Measure CER/WER on a real, labelled folio set and replace the illustrative benchmark.
+4. Reviewer accounts and role-based access.
+5. Anchor the daily Merkle root to an external, public timestamp.
+
+## 9. Project Structure
+
+```text
+server.ts                 Express API, ledger, crypto, Gemini calls
+src/App.tsx               Tabs and application state
+src/components/           PreprocessViewer, ConsensusViewer, DamageAwareViewer,
+                          ReviewQueue, ProvenanceLedger, HybridSearch,
+                          BenchmarkDashboard, TamperDemoModal, Navbar
+src/types/manuscript.ts   Shared types
+src/assets/images/        Sample folio images
+```
+
+## 10. License
+
+Apache-2.0
