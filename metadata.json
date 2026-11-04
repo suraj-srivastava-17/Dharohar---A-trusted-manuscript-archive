@@ -1,0 +1,6 @@
+{
+  "name": "Dharohar - Trusted Manuscript Archive",
+  "description": "Cryptographically verified ancient manuscript archival system featuring multi-engine consensus OCR, damage-aware AI restoration, human review queue, and Ed25519 hash-chain ledger.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
